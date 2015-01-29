@@ -6,7 +6,7 @@
 #define None -1
 #define MAX_CONNECTION 10
 
-/* Class Connector - represent a connecting wire */
+/* represent a connecting wire */
 struct wire{
 	int value;		/* high or low */
 	struct gate *owner;	/* which LC owns this wire */
@@ -18,6 +18,7 @@ struct wire{
 	void (*set)(struct wire *, int);
 };
 
+/* represent a logical gate */
 struct gate{
 	char *name;
 	void (*evaluate)(struct gate *);
@@ -27,8 +28,11 @@ struct gate{
 	struct HA *ha;
 	struct FA *fa;
 	struct LATCH *latch;
+	struct DFF *dff;
+	struct DIV2 *div2;
+	struct COUNTER *counter;
 };
-	
+
 struct NOT{
 	struct wire *A;		// in
 	struct wire *B;		// out
@@ -46,14 +50,14 @@ struct XOR{
 	struct gate *O1;
 };
 
-struct HA{
+struct HA{ // half adder
 	struct wire *A,*B;	// in
 	struct wire *S,*C;	// out
 	struct gate *X1;
 	struct gate *A1;
 };
 
-struct FA{
+struct FA{ // full adder
 	struct wire *A,*B,*Cin;	// in
 	struct wire *S,*Cout;	// out
 	struct gate *H1,*H2;
@@ -65,27 +69,58 @@ struct LATCH{
 	struct gate *N1,*N2;
 };
 
+struct DFF{ // D FlipFlop
+	struct wire *D,*C;
+	struct wire *Q;
+	int prev;
+};
+
+struct DIV2{ // Divide by 2 Circuit
+	struct wire *C,*D;
+	struct wire *Q;
+	struct gate *DFF,*NOT;
+};
+
+struct COUNTER{ // Counting Register
+	struct gate *B0,*B1;
+	struct gate *B2,*B3;
+};
+
+
 void testLatch(void);
-struct gate *Latch(char *name);
-struct gate *Nand(char *name);
-void eval_nand(struct gate *this);
+void testDivBy2(void);
+void testCounter(void);
 int bit(char *x, int b);
 struct gate *Or(char *name);
 struct gate *Xor(char *name);
 struct gate *And(char *name);
 struct gate *Not(char *name);
+struct gate *Div2(char *name);
+struct gate *Nand(char *name);
+struct gate *Latch(char *name);
 void test4bit(char *a, char *b);
 void eval_or(struct gate *this);
 void eval_and(struct gate *this);
+struct gate *Counter(char *name);
 void eval_not(struct gate *this);
+void eval_dff(struct gate *this);
+void eval_nand(struct gate *this);
 struct gate *HalfAdder(char *name);
 struct gate *FullAdder(char *name);
+struct gate *DFlipFlop(char *name);
 void eval_default(struct gate *this);
 void LC(struct gate **thisref, char *name);
 void Gate2(struct gate **this, char *name);
 void setMethod(struct wire *this, int value);
 void connectMethod(struct wire *this, int count, ...);
 struct wire *Connector(struct gate *owner, char *name, int activates, int monitor);
+
+
+
+/********************************************************************/
+/*                        PART ONE                                  */
+/********************************************************************/
+
 
 struct wire *Connector(struct gate *owner, char *name, int activates, int monitor)
 {
@@ -130,7 +165,7 @@ void setMethod(struct wire *this, int value)
 {
 	int i;
 
-	if(this->value == value)
+	if(this->value == value) /* Ignore if no change */
 		return;
 
 	this->value = value;
@@ -162,7 +197,7 @@ void eval_default(struct gate *this)
 	return;
 }
 
-struct gate *Not(char *name)
+struct gate *Not(char *name) /* Inverter. Input A. Output B */
 {
 	struct gate *this = NULL;
 
@@ -183,7 +218,7 @@ void eval_not(struct gate *this)
 	this->not->B->set(this->not->B, (this->not->A->value == 1) ? 0 : 1);
 }
 
-void Gate2(struct gate **thisref, char *name)
+void Gate2(struct gate **thisref, char *name) /* two input gates. Inputs A, B. Output C */
 {
 	LC(thisref, name);
 
@@ -322,7 +357,7 @@ int bit(char *x, int b)
 	return (x[b] == '1') ? 1 : 0;
 }
 
-void test4bit(char *a, char *b)
+void test4bit(char *a, char *b) /* a, b four char strings like '0110' */
 {
 	struct gate *F0,*F1,*F2,*F3;
 
@@ -347,7 +382,14 @@ void test4bit(char *a, char *b)
 	printf("\n%d %d %d %d %d\n",F3->fa->Cout->value,F3->fa->S->value,F2->fa->S->value,F1->fa->S->value,F0->fa->S->value);
 }
 
-struct gate *Nand(char *name)
+
+
+/********************************************************************/
+/*                        PART TWO                                  */
+/********************************************************************/
+
+
+struct gate *Nand(char *name) /* two input NAND Gate */
 {
 	struct gate *this = NULL;
 
@@ -411,24 +453,146 @@ void testLatch(void)
 		else
 			break;
 	}
+	printf("\n\n");
+}
+
+struct gate *DFlipFlop(char *name)
+{
+	struct gate *this = NULL;
+
+	LC(&this,name);
+	if((this->dff = (struct DFF *)malloc(sizeof(struct DFF))) == NULL){
+		fprintf(stderr,"\nerror : unable to allocate memory for gate->DFF\n");
+		exit(3);
+	}
+
+	this->dff->D = Connector(this, "D", 1, 0);
+	this->dff->C = Connector(this, "C", 1, 0);
+	this->dff->Q = Connector(this, "Q", 0, 0);
+
+	this->dff->Q->value = 0;
+	this->dff->prev = None;
+
+	this->evaluate = eval_dff;
+
+	return this;
+}
+
+void eval_dff(struct gate *this)
+{
+	if((this->dff->C->value == 0) && (this->dff->prev == 1)) /* Clock drop */
+		this->dff->Q->set(this->dff->Q,this->dff->D->value);
+	this->dff->prev = this->dff->C->value;
+}
+
+struct gate *Div2(char *name)
+{
+	struct gate *this = NULL;
+
+	LC(&this,name);
+	if((this->div2 = (struct DIV2 *)malloc(sizeof(struct DIV2))) == NULL){
+		fprintf(stderr,"\nerror : unable to allocate memory for gate->DFF\n");
+		exit(3);
+	}
+
+	this->div2->C = Connector(this, "C", 1, 0);
+	this->div2->D = Connector(this, "D", 0, 0);
+	this->div2->Q = Connector(this, "Q", 0, 1);
+
+	this->div2->Q->value = 0;
+
+	this->div2->DFF = DFlipFlop("DFF");
+	this->div2->NOT = Not("NOT");
+
+	this->div2->C->connect(this->div2->C, 1, this->div2->DFF->dff->C);
+	this->div2->D->connect(this->div2->D, 1, this->div2->DFF->dff->D);
+
+	this->div2->DFF->dff->Q->connect(this->div2->DFF->dff->Q, 2, this->div2->NOT->not->A, this->div2->Q);
+	this->div2->NOT->not->B->connect(this->div2->NOT->not->B, 1, this->div2->DFF->dff->D);
+
+	this->div2->DFF->dff->Q->activates = 1;
+	this->div2->DFF->dff->D->value = 1 - this->div2->DFF->dff->Q->value;
+
+	return this;
+}
+
+void testDivBy2(void)
+{
+	int c;
+	int ch;
+	struct gate *x;
+
+	c = 0;
+	x = Div2("X");
+	x->div2->C->set(x->div2->C,c);
+
+	while(1){
+		printf("Clock is %d. Hit return to toggle clock ",c);
+		if((ch = getchar()) == EOF)
+			break;
+		c = !c;
+		x->div2->C->set(x->div2->C,c);
+	}
+	printf("\n\n");
+}
+
+struct gate *Counter(char *name)
+{
+	struct gate *this = NULL;
+
+	LC(&this,name);
+	if((this->counter = (struct COUNTER *)malloc(sizeof(struct COUNTER))) == NULL){
+		fprintf(stderr,"\nerror : unable to allocate memory for gate->DFF\n");
+		exit(3);
+	}
+
+	this->counter->B0 = Div2("B0");
+	this->counter->B1 = Div2("B1");
+	this->counter->B2 = Div2("B2");
+	this->counter->B3 = Div2("B3");
+
+	this->counter->B0->div2->Q->connect(this->counter->B0->div2->Q, 1, this->counter->B1->div2->C);
+	this->counter->B1->div2->Q->connect(this->counter->B1->div2->Q, 1, this->counter->B2->div2->C);
+	this->counter->B2->div2->Q->connect(this->counter->B2->div2->Q, 1, this->counter->B3->div2->C);
+
+	return this;
+}
+
+void testCounter(void)
+{
+	int ch;
+	struct gate *x = Counter("x"); /* x is a four bit counter */
+
+	x->counter->B0->div2->C->set(x->counter->B0->div2->C,1); /* set the clock line 1 */
+	while(1){
+		printf("Count is %d %d ",x->counter->B3->div2->Q->value,x->counter->B2->div2->Q->value);
+		printf("%d %d",x->counter->B1->div2->Q->value,x->counter->B0->div2->Q->value);
+
+		printf("\nHit return to pulse the clock ");
+		if((ch = getchar()) == EOF)
+			break;
+		
+		x->counter->B0->div2->C->set(x->counter->B0->div2->C,0); /* toggle the clock */
+		x->counter->B0->div2->C->set(x->counter->B0->div2->C,1);
+	}
+	printf("\n\n");
 }
 
 main()
 {
-/*
 	printf("\nNot output\n");
-	struct gate *n = Not("N1");
-	n->not->B->monitor = 1;
-	n->not->A->set(n->not->A,0);
-	n->not->A->set(n->not->A,1);
+	struct gate *sn = Not("N1");
+	sn->not->B->monitor = 1;
+	sn->not->A->set(sn->not->A,0);
+	sn->not->A->set(sn->not->A,1);
 	printf("\n\n");
 
 	printf("\nAnd output\n");
-	struct gate *a = And("A1");
-	a->gate2->C->monitor = 1;
-	a->gate2->A->set(a->gate2->A,1);
-	a->gate2->B->set(a->gate2->B,1);
-	a->gate2->A->set(a->gate2->A,0);
+	struct gate *sa = And("A1");
+	sa->gate2->C->monitor = 1;
+	sa->gate2->A->set(sa->gate2->A,1);
+	sa->gate2->B->set(sa->gate2->B,1);
+	sa->gate2->A->set(sa->gate2->A,0);
 	printf("\n\n");
 
 	printf("\nOr output\n");
@@ -476,6 +640,12 @@ main()
 	na->gate2->A->set(na->gate2->A,0);
 	printf("\n\n");
 
+	printf("\nLatch output\n");
 	testLatch();
-*/
+
+	printf("\nDivBy2 output\n");
+	testDivBy2();
+
+	printf("\nCounter output\n");
+	testCounter();
 }
